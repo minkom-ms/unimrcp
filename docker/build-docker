@@ -7,9 +7,9 @@ do
     else
         args=""
     fi	
-    docker build . ${args} -f Dockerfile.${target} -t customonprem.azurecr.io/genesys/unimrcp:${target}
+    docker build . ${args} -f Dockerfile.${target} -t skyman.azurecr.io/scratch/onprem/unimrcp:${target}
     if [[ "$1" == "push" ]]; then
-        docker push customonprem.azurecr.io/genesys/unimrcp:${target}
+        docker push skyman.azurecr.io/scratch/onprem/unimrcp:${target}
     fi
 done
 
