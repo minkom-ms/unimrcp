@@ -473,8 +473,50 @@ static apt_bool_t ms_recog_stream_destroy(mpf_audio_stream_t* stream)
 static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* codec)
 {
     auto recog_channel = static_cast<ms_recog_channel_t*>(stream->obj);
-    auto resource = recog_channel->resource;
-    resource->pushStream = Audio::AudioInputStream::CreatePushStream();
+    auto resource = recog_channel->resource;   
+
+    if (codec != NULL && codec->attribs != NULL)
+    {
+        // 1 channel/Mono
+        uint8_t channels = 1;
+
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "PushStream from codec: %d %d %d",
+            codec->attribs->sample_rates,
+            codec->attribs->bits_per_sample,
+            channels);
+        resource->pushStream = Audio::AudioInputStream::CreatePushStream(
+            Audio::AudioStreamFormat::GetWaveFormatPCM(
+                (uint)codec->attribs->sample_rates,
+                codec->attribs->bits_per_sample,
+                channels));
+    }
+    else
+    {
+        /*
+        // If codec or codec attributes is not provided then 
+        // we will default to Microsoft Cognitive Speech Recognition service
+        // i.e. 16kHz - 16 bit - 1 channel/mono
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "PushStream default: 16000 16 1");
+        resource->pushStream = Audio::AudioInputStream::CreatePushStream();
+        */
+        //BUGBUG: code is always coming null, need to figure that out
+
+        // 1 channel/Mono
+        uint8_t channels = 1;
+        uint8_t bits_per_sample = 16;
+        uint sample_rates = 8000;
+
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "PushStream from debug default: %d %d %d",
+            sample_rates,
+            bits_per_sample,
+            channels);
+        resource->pushStream = Audio::AudioInputStream::CreatePushStream(
+            Audio::AudioStreamFormat::GetWaveFormatPCM(
+                sample_rates,
+                bits_per_sample,
+                channels));
+    }  
+    
     const auto audioInput = Audio::AudioConfig::FromStreamInput(resource->pushStream);
     resource->recognizer = SpeechRecognizer::FromConfig(resource->config, audioInput);
 
