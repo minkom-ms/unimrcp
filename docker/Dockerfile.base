@@ -7,3 +7,7 @@ RUN git clone --depth 1 https://github.com/mradmila/unimrcp.git -b master && \
     ./configure && \
     make && \
     make install
+
+RUN adduser --disabled-password --gecos "" nonroot
+USER nonroot
+
