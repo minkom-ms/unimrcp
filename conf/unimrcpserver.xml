@@ -42,7 +42,12 @@
       <!-- <sip-ip>10.10.0.1</sip-ip> -->
       <!-- <sip-ext-ip>a.b.c.d</sip-ext-ip> -->
       <sip-port>8060</sip-port>
-      <sip-transport>udp,tcp</sip-transport>
+      <!--
+        Use only tcp configuration for sip transport as a workaround for an interop issue.
+        Details: https://groups.google.com/forum/#!topic/unimrcp/89_xK0tP0fo
+      -->
+      <sip-transport>tcp</sip-transport>
+      <!-- <sip-transport>udp,tcp</sip-transport> -->
       <!-- <force-destination>true</force-destination> -->
             <!--
         This parameter can be used to disable the Sofia SIP SDP Offer/Answer Engine Module (soa).

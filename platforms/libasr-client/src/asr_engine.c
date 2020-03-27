@@ -574,7 +574,7 @@ ASR_CLIENT_DECLARE(asr_session_t*) asr_session_create(asr_engine_t *engine, cons
     // see https://docs.microsoft.com/en-us/cpp/cognitive-services/speech/audio-audiostreamformat#getwaveformatpcm
 	mpf_codec_capabilities_add(
 			&capabilities->codecs,
-			MPF_SAMPLE_RATE_16000,
+			MPF_SAMPLE_RATE_8000 | MPF_SAMPLE_RATE_16000,
 			"LPCM");
 
 	termination = mrcp_application_audio_termination_create(

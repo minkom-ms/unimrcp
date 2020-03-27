@@ -136,7 +136,7 @@ struct RecogResource
 
             apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Microsoft Recognition engine configured to use azure-cloud speech subscription");
         }
-        
+
         recognized = false;
     }
 };
@@ -466,12 +466,15 @@ static apt_bool_t ms_recog_channel_request_dispatch(mrcp_engine_channel_t* chann
 /** Callback is called from MPF engine context to destroy any additional data associated with audio stream */
 static apt_bool_t ms_recog_stream_destroy(mpf_audio_stream_t* stream)
 {
+    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Stream destroyed");
     return TRUE;
 }
 
 /** Callback is called from MPF engine context to perform any action before open */
 static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* codec)
 {
+    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Stream open");
+
     auto recog_channel = static_cast<ms_recog_channel_t*>(stream->obj);
     auto resource = recog_channel->resource;   
 
@@ -480,7 +483,7 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
         // 1 channel/Mono
         uint8_t channels = 1;
 
-        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "PushStream from codec: %d %d %d",
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "CreatePushStream from codec: %d %d %d",
             codec->attribs->sample_rates,
             codec->attribs->bits_per_sample,
             channels);
@@ -506,7 +509,7 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
         uint8_t bits_per_sample = 16;
         uint sample_rates = 8000;
 
-        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "PushStream from debug default: %d %d %d",
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "CreatePushStream from debug default: %d %d %d",
             sample_rates,
             bits_per_sample,
             channels);
@@ -534,8 +537,7 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
             if(e.Result->Text.empty() ||
                (e.Result->Text.find_first_not_of(' ') == std::string::npos))
             {
-                // empty
-                // use continuous recognition to avoid empty result
+                // Empty result.
             }
             else
             {
@@ -544,11 +546,13 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
                 try
                 {
                     recog_channel->resource->recognizer->StopContinuousRecognitionAsync();
+                    apt_log(RECOG_LOG_MARK, APT_PRIO_DEBUG,
+                        "Stopped recognizer.");
                 }
                 catch(...)
                 {
                     apt_log(RECOG_LOG_MARK, APT_PRIO_DEBUG,
-                            "Stop recognizer failed. Maybe reset already.");
+                        "Stop recognizer failed. Maybe reset already.");
                 }
             }
         }
@@ -578,6 +582,7 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
 /** Callback is called from MPF engine context to perform any action after close */
 static apt_bool_t ms_recog_stream_close(mpf_audio_stream_t* stream)
 {
+    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Stream closed");
     return TRUE;
 }
 
@@ -673,17 +678,24 @@ static apt_bool_t ms_recog_stream_write(mpf_audio_stream_t* stream, const mpf_fr
     if(recog_channel->stop_response)
     {
         /* send asynchronous response to STOP request */
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Send asynchronous response to STOP request");
         mrcp_engine_channel_message_send(recog_channel->channel, recog_channel->stop_response);
         recog_channel->stop_response = nullptr;
         recog_channel->recog_request = nullptr;
         return TRUE;
     }
+
     if(frame->codec_frame.size)
     {
         recog_channel->resource->pushStream->Write(static_cast<uint8_t*>(
                                                    frame->codec_frame.buffer),
                                                    frame->codec_frame.size);
     }
+    else
+    {
+        apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "Codec frame is empty");
+    }
+
     return TRUE;
 }
 
