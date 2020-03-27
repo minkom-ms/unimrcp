@@ -49,13 +49,7 @@
       <!-- <sip-ip>10.10.0.1</sip-ip> -->
       <!-- <sip-ext-ip>a.b.c.d</sip-ext-ip> -->
       <sip-port>6062</sip-port>
-      <!--
-        Unimrcpserver is using only tcp configuration for sip transport as a workaround for an interop issue.
-        Hence clients should also use only tcp for their sip transport.
-        Details: https://groups.google.com/forum/#!topic/unimrcp/89_xK0tP0fo
-      -->
-      <sip-transport>tcp</sip-transport>
-      <!-- <sip-transport>udp</sip-transport> -->
+      <sip-transport>udp</sip-transport>
       <ua-name>UniMRCP SofiaSIP</ua-name>
       <sdp-origin>UniMRCPClient</sdp-origin>
       <!-- <sip-t1>500</sip-t1> -->
