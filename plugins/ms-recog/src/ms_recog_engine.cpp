@@ -473,53 +473,61 @@ static apt_bool_t ms_recog_stream_destroy(mpf_audio_stream_t* stream)
 /** Callback is called from MPF engine context to perform any action before open */
 static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* codec)
 {
-    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Stream open");
+    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Opening stream in direction: %d", stream->direction);
 
     auto recog_channel = static_cast<ms_recog_channel_t*>(stream->obj);
     auto resource = recog_channel->resource;   
+    
+    // Default for a stream in unimrcp
+    uint8_t channels = 1;
+    uint8_t bits_per_sample = 16;
+
+    // Default for Microsoft cognitive speech service
+    uint sample_rates = 8000;
 
     if (codec != NULL && codec->attribs != NULL)
     {
-        // 1 channel/Mono
-        uint8_t channels = 1;
+        // This is a "null mpf audio bridge" scenario where source and sink match at the codec level
+        // In this case there is no transformation involved and we can directly use the only codec involved.
+
+        sample_rates = (uint)codec->attribs->sample_rates;
+        bits_per_sample = codec->attribs->bits_per_sample;
 
         apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "CreatePushStream from codec: %d %d %d",
-            codec->attribs->sample_rates,
-            codec->attribs->bits_per_sample,
-            channels);
-        resource->pushStream = Audio::AudioInputStream::CreatePushStream(
-            Audio::AudioStreamFormat::GetWaveFormatPCM(
-                (uint)codec->attribs->sample_rates,
-                codec->attribs->bits_per_sample,
-                channels));
+            sample_rates,
+            bits_per_sample,
+            channels);        
+    }
+    else if (stream->direction == STREAM_DIRECTION_SEND &&
+             stream->tx_descriptor != nullptr &&
+             stream->tx_descriptor->enabled)
+    {
+        // This is a "mpf bridge" scenario, where stream would have gone through codec transforms and
+        // resampling to form a LPCM sink stream. Hence there is no single codec involved here but a daisy chain.
+
+        sample_rates = (uint)stream->tx_descriptor->sampling_rate;
+
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "CreatePushStream from send (sink) stream: %s %d %d %d %d %s",
+            stream->tx_descriptor->name.buf,
+            stream->tx_descriptor->payload_type,
+            sample_rates,
+            bits_per_sample,
+            channels,
+            stream->tx_descriptor->enabled ? "enabled" : "disabled");
     }
     else
     {
-        /*
-        // If codec or codec attributes is not provided then 
-        // we will default to Microsoft Cognitive Speech Recognition service
-        // i.e. 16kHz - 16 bit - 1 channel/mono
-        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "PushStream default: 16000 16 1");
-        resource->pushStream = Audio::AudioInputStream::CreatePushStream();
-        */
-        //BUGBUG: code is always coming null, need to figure that out
-
-        // 1 channel/Mono
-        uint8_t channels = 1;
-        uint8_t bits_per_sample = 16;
-        uint sample_rates = 8000;
-
-        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "CreatePushStream from debug default: %d %d %d",
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "CreatePushStream from default: %d %d %d",
             sample_rates,
             bits_per_sample,
-            channels);
-        resource->pushStream = Audio::AudioInputStream::CreatePushStream(
+            channels);        
+    }  
+    
+    resource->pushStream = Audio::AudioInputStream::CreatePushStream(
             Audio::AudioStreamFormat::GetWaveFormatPCM(
                 sample_rates,
                 bits_per_sample,
                 channels));
-    }  
-    
     const auto audioInput = Audio::AudioConfig::FromStreamInput(resource->pushStream);
     resource->recognizer = SpeechRecognizer::FromConfig(resource->config, audioInput);
 
