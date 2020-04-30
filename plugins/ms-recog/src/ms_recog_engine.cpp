@@ -31,6 +31,7 @@
 #include <memory>
 #include <speechapi_cxx.h>
 #include <string>
+#include <rapidjson/document.h>
 
 using namespace Microsoft::CognitiveServices::Speech;
 using namespace Microsoft::speechlib;
@@ -76,6 +77,9 @@ static const mpf_audio_stream_vtable_t audio_stream_vtable = {
     ms_recog_stream_destroy, nullptr, nullptr, nullptr, ms_recog_stream_open, ms_recog_stream_close, ms_recog_stream_write, nullptr
 };
 
+/** Declaration of helper methods */
+static std::string ms_recog_get_lexical_text_from_json_result(std::string& jsonResult);
+
 /** Declare this macro to set plugin version */
 MRCP_PLUGIN_VERSION_DECLARE
 
@@ -99,15 +103,11 @@ struct ms_recog_engine_t
 
 struct RecogResource
 {
-    int count = 0;
     std::string result;
-
-    // std::shared_ptr<SpeechRecognizer> recognizer;
+    std::string grammarId;
     std::shared_ptr<SpeechConfig> config;
-    char* channelId{};
     std::shared_ptr<Audio::PushAudioInputStream> pushStream;
     std::shared_ptr<SpeechRecognizer> recognizer;
-    bool recognized;
 
     RecogResource()
     {
@@ -137,7 +137,8 @@ struct RecogResource
             apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Microsoft Recognition engine configured to use azure-cloud speech subscription");
         }
 
-        recognized = false;
+        // Request detailed output format.
+        config->SetOutputFormat(OutputFormat::Detailed);
     }
 };
 
@@ -331,6 +332,52 @@ static apt_bool_t ms_recog_channel_request_process(mrcp_engine_channel_t* channe
     return ms_recog_msg_signal(MS_RECOG_MSG_REQUEST_PROCESS, channel, request);
 }
 
+/** Process DEFINE_GRAMMAR request */
+static apt_bool_t ms_recog_channel_define_grammar(mrcp_engine_channel_t* channel,
+                                                  mrcp_message_t* request,
+                                                  mrcp_message_t* response)
+{
+    apt_log(RECOG_LOG_MARK,APT_PRIO_INFO, "DEFINE_GRAMMAR:\n\n%s\n\n", request->body.buf);
+
+    // Get generic header
+    mrcp_generic_header_t* generic_header =
+    static_cast<mrcp_generic_header_t*>(mrcp_generic_header_get(request));
+
+    if(generic_header)
+    {
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Processing generic header");
+
+        if(mrcp_generic_header_property_check(request, GENERIC_HEADER_CONTENT_ID) == TRUE)
+        {
+            apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Header Content-Id is [%s]",
+                    generic_header->content_id.buf);
+
+            auto* recog_channel = static_cast<ms_recog_channel_t*>(channel->method_obj);
+
+            // Store content-id i.e. grammarId in recognition resource.
+            if(recog_channel->resource != nullptr)
+            {
+                // Deep copy content-id from request message.
+                recog_channel->resource->grammarId.assign(generic_header->content_id.buf, (size_t)generic_header->content_id.length);
+                apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Stored grammar-Id [%s] in recog resource", recog_channel->resource->grammarId.c_str());
+            }
+        }
+        else
+        {
+            apt_log(RECOG_LOG_MARK, APT_PRIO_ERROR, "GENERIC_HEADER_CONTENT_ID not found in the header of DEFINE_GRAMMAR request.");
+        }
+    }
+    else
+    {
+        apt_log(RECOG_LOG_MARK, APT_PRIO_ERROR, "generic header not found in DEFINE_GRAMMAR request.");
+    }
+
+    /* send asynchronous response for not handled request */
+    mrcp_engine_channel_message_send(channel, response);
+
+    return TRUE;
+}
+
 /** Process RECOGNIZE request */
 static apt_bool_t ms_recog_channel_recognize(mrcp_engine_channel_t* channel,
                                              mrcp_message_t* request,
@@ -440,6 +487,7 @@ static apt_bool_t ms_recog_channel_request_dispatch(mrcp_engine_channel_t* chann
     case RECOGNIZER_GET_PARAMS:
         break;
     case RECOGNIZER_DEFINE_GRAMMAR:
+        processed = ms_recog_channel_define_grammar(channel, request, response);
         break;
     case RECOGNIZER_RECOGNIZE:
         processed = ms_recog_channel_recognize(channel, request, response);
@@ -540,8 +588,9 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
     [recog_channel](const SpeechRecognitionEventArgs& e) {
         if(e.Result->Reason == ResultReason::RecognizedSpeech)
         {
-            apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Recognized: %s",
-                    e.Result->Text.c_str());
+            std::string displayText = e.Result->Text;
+            std::string lexicalText = "";
+
             if(e.Result->Text.empty() ||
                (e.Result->Text.find_first_not_of(' ') == std::string::npos))
             {
@@ -549,7 +598,27 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
             }
             else
             {
-                recog_channel->resource->result = e.Result->Text;
+                std::string jsonResult = e.Result->Properties.GetProperty(PropertyId::SpeechServiceResponse_JsonResult);
+                apt_log(RECOG_LOG_MARK, APT_PRIO_DEBUG, "JsonResult: \n%s\n", jsonResult.c_str());
+
+                lexicalText = ms_recog_get_lexical_text_from_json_result(jsonResult);
+
+                apt_log(RECOG_LOG_MARK, APT_PRIO_INFO,
+                    "Recognized: DisplayText = %s, LexicalText = %s",
+                    displayText.c_str(),
+                    lexicalText.c_str());
+
+                // Store recognition result in reco resource for result formation.
+                if (!lexicalText.empty())
+                {
+                    recog_channel->resource->result = lexicalText;
+                }
+                else
+                {
+                    // If we are not able to fetch lexical text, we will default to display text
+                    recog_channel->resource->result = displayText;
+                }
+
                 ms_recog_recognition_complete(recog_channel, RECOGNIZER_COMPLETION_CAUSE_SUCCESS);
                 try
                 {
@@ -602,21 +671,22 @@ static apt_bool_t ms_recog_result_load(ms_recog_channel_t* recog_channel, mrcp_m
         return false;
     }
 
-    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "load recognized result.");
+    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Load recognized result.");
 
 
     const auto body = &message->body;
 
     const auto result = recog_channel->resource->result.c_str();
+    const auto grammarId = recog_channel->resource->grammarId.c_str();
     body->buf = apr_psprintf(message->pool,
                              "<?xml version=\"1.0\"?>\n"
                              "<result>\n"
-                             "  <interpretation confidence=\"%d\">\n"
+                             "  <interpretation grammar=\"session:%s\" confidence=\"%.2f\">\n"
                              "    <instance>%s</instance>\n"
                              "    <input mode=\"speech\">%s</input>\n"
                              "  </interpretation>\n"
                              "</result>\n",
-                             99, result, result);
+                             grammarId, 0.99f, result, result);
 
     if(body->buf)
     {
@@ -640,7 +710,7 @@ static apt_bool_t ms_recog_result_load(ms_recog_channel_t* recog_channel, mrcp_m
 static apt_bool_t ms_recog_recognition_complete(ms_recog_channel_t* recog_channel,
                                                 mrcp_recog_completion_cause_e cause)
 {
-    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "complete recognition");
+    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Complete recognition");
 
     if(recog_channel->recog_request == nullptr)
     {
@@ -670,7 +740,7 @@ static apt_bool_t ms_recog_recognition_complete(ms_recog_channel_t* recog_channe
 
     if(cause == RECOGNIZER_COMPLETION_CAUSE_SUCCESS)
     {
-        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "recognition complete: try to load recog results");
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Recognition complete: try to load recog results");
         ms_recog_result_load(recog_channel, message);
     }
 
@@ -760,4 +830,54 @@ static apt_bool_t ms_recog_msg_process(apt_task_t* task, apt_task_msg_t* msg)
         break;
     }
     return TRUE;
+}
+
+static std::string ms_recog_get_lexical_text_from_json_result(std::string& jsonResult)
+{
+    std::string lexicalText;
+
+    if (jsonResult.empty())
+    {
+        apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "jsonResult is empty.");
+    }
+    else
+    {
+        rapidjson::Document doc;
+        doc.Parse(jsonResult.c_str());
+        if(doc.IsObject())
+        {
+            apt_log(RECOG_LOG_MARK, APT_PRIO_DEBUG, "jsonResult document created");
+
+            // Using a reference for consecutive access is handy and faster.
+            const rapidjson::Value& nBest = doc["NBest"];
+
+            if (nBest.IsArray())
+            {
+                apt_log(RECOG_LOG_MARK, APT_PRIO_DEBUG, "Fetched reference to NBest array from jsonResult");
+
+                if (nBest.Size() > 0)
+                {
+                    // Pick 0th result from NBest
+                    rapidjson::Value::ConstValueIterator itrBestResult = nBest.Begin();
+                    const rapidjson::Value::ConstMemberIterator itrBestResultLexical = itrBestResult->FindMember("Lexical");
+                    lexicalText = itrBestResultLexical->value.GetString();
+                    apt_log(RECOG_LOG_MARK, APT_PRIO_DEBUG, "Lexical text for best result: %s", lexicalText.c_str());
+                }
+                else
+                {
+                    apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "NBest array is empty in jsonResult");
+                }
+            }
+            else
+            {
+                apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "jsonResult NBest is not an array");
+            }
+        }
+        else
+        {
+            apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "jsonResult document is not an object");
+        }  
+    }
+
+    return lexicalText;
 }
