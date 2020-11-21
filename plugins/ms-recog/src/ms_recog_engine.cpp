@@ -30,10 +30,13 @@
 #include <locale>
 #include <memory>
 #include <speechapi_cxx.h>
+#include <speechapi_cxx_dialog_service_config.h>
 #include <string>
+#include <iostream>
 #include <rapidjson/document.h>
 
 using namespace Microsoft::CognitiveServices::Speech;
+using namespace Microsoft::CognitiveServices::Speech::Dialog;
 using namespace Microsoft::speechlib;
 
 #define RECOG_ENGINE_TASK_NAME "MS Recog Engine"
@@ -105,40 +108,35 @@ struct RecogResource
 {
     std::string result;
     std::string grammarId;
-    std::shared_ptr<SpeechConfig> config;
+    std::shared_ptr<DialogServiceConfig> config;
     std::shared_ptr<Audio::PushAudioInputStream> pushStream;
-    std::shared_ptr<SpeechRecognizer> recognizer;
+    std::shared_ptr<DialogServiceConnector> recognizer;
 
     RecogResource()
     {
         // https://docs.microsoft.com/en-us/azure/cognitive-services/speech-service/speech-container-howto#speech-to-text-2
-        
-        if(ConfigManager::GetBoolValue(Common::SPEECH_SECTION, Common::SR_USE_LOCAL_CONTAINER))
-        {
-            static auto localKey =
-            ConfigManager::GetStrValue(Common::SPEECH_SECTION, Common::SR_LOCAL_KEY);
-            static auto endpoint =
-            ConfigManager::GetStrValue(Common::SPEECH_SECTION, Common::SR_LOCAL_ENDPOINT);
 
-            config = SpeechConfig::FromEndpoint(endpoint, localKey);
+        // get speech SDK subscription key and region from config.json
+        static auto subscriptionKey =
+        ConfigManager::GetStrValue(Common::SPEECH_SECTION, Common::SPEECH_SDK_KEY);
+        static auto region =
+        ConfigManager::GetStrValue(Common::SPEECH_SECTION, Common::SPEECH_SDK_REGION);
 
-            apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Microsoft Recognition engine configured to use local speech container endpoint");
-        }
-        else
-        {
-            // get speech SDK subscription key and region from config.json
-            static auto subscriptionKey =
-            ConfigManager::GetStrValue(Common::SPEECH_SECTION, Common::SPEECH_SDK_KEY);
-            static auto region =
-            ConfigManager::GetStrValue(Common::SPEECH_SECTION, Common::SPEECH_SDK_REGION);
+        config = BotFrameworkConfig::FromSubscription(subscriptionKey, region);
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Microsoft Dialog Recognition engine configured to use azure-cloud speech subscription");
 
-            config = SpeechConfig::FromSubscription(subscriptionKey, region);
+        // we need endpoint override
+        std::stringstream endpoint("wss://");
+        endpoint << region;
+        endpoint << ".convai.speech.microsoft.com/mrcp/api/v1";
+        config->SetProperty("SPEECH-Endpoint", endpoint.str());
 
-            apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Microsoft Recognition engine configured to use azure-cloud speech subscription");
-        }
+        // client ID. Unique identifier for the specific client
+        // Very helpful to provide when reporting issues
+        config->SetServiceProperty("clientId", "1182a496-d94f-4132-96e3-71933054705f", ServicePropertyChannel::UriQueryParameter);
 
         // Request detailed output format.
-        config->SetOutputFormat(OutputFormat::Detailed);
+        // config->SetOutputFormat(OutputFormat::Detailed);
     }
 };
 
@@ -577,7 +575,10 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
                 bits_per_sample,
                 channels));
     const auto audioInput = Audio::AudioConfig::FromStreamInput(resource->pushStream);
-    resource->recognizer = SpeechRecognizer::FromConfig(resource->config, audioInput);
+    // Unique ID for the connection. Must be created unique on every connection
+    // very useful when reporting issues
+    // resource->config->SetServiceProperty("connectionId", "00000000-0000-0000-0000-000000000000", ServicePropertyChannel::UriQueryParameter);
+    resource->recognizer = DialogServiceConnector::FromConfig(resource->config, audioInput);
 
     resource->recognizer->Recognizing.Connect([](const SpeechRecognitionEventArgs& e) noexcept {
         apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Recognizing: %s", e.Result->Text.c_str());
@@ -588,57 +589,48 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
     [recog_channel](const SpeechRecognitionEventArgs& e) {
         if(e.Result->Reason == ResultReason::RecognizedSpeech)
         {
+            // just log the reco result since we're interested in the bot response result
+            // which will come with the ActivityReceived event handler below
             std::string displayText = e.Result->Text;
-            std::string lexicalText = "";
-
-            if(e.Result->Text.empty() ||
-               (e.Result->Text.find_first_not_of(' ') == std::string::npos))
-            {
-                // Empty result.
-            }
-            else
-            {
-                std::string jsonResult = e.Result->Properties.GetProperty(PropertyId::SpeechServiceResponse_JsonResult);
-                apt_log(RECOG_LOG_MARK, APT_PRIO_DEBUG, "JsonResult: \n%s\n", jsonResult.c_str());
-
-                lexicalText = ms_recog_get_lexical_text_from_json_result(jsonResult);
-
-                apt_log(RECOG_LOG_MARK, APT_PRIO_INFO,
-                    "Recognized: DisplayText = %s, LexicalText = %s",
-                    displayText.c_str(),
-                    lexicalText.c_str());
-
-                // Store recognition result in reco resource for result formation.
-                if (!lexicalText.empty())
-                {
-                    recog_channel->resource->result = lexicalText;
-                }
-                else
-                {
-                    // If we are not able to fetch lexical text, we will default to display text
-                    recog_channel->resource->result = displayText;
-                }
-
-                ms_recog_recognition_complete(recog_channel, RECOGNIZER_COMPLETION_CAUSE_SUCCESS);
-                try
-                {
-                    recog_channel->resource->recognizer->StopContinuousRecognitionAsync();
-                    apt_log(RECOG_LOG_MARK, APT_PRIO_DEBUG,
-                        "Stopped recognizer.");
-                }
-                catch(...)
-                {
-                    apt_log(RECOG_LOG_MARK, APT_PRIO_DEBUG,
-                        "Stop recognizer failed. Maybe reset already.");
-                }
-            }
+            apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Recognized text: %s", displayText.c_str());
         }
         else if(e.Result->Reason == ResultReason::NoMatch)
         {
+            auto noMatch = NoMatchDetails::FromResult(e.Result);
+            switch (noMatch->Reason)
+            {
+                case NoMatchReason::NotRecognized:
+                    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "NO MATCH: Speech detected but not recognized.");
+                    break;
+                case NoMatchReason::InitialSilenceTimeout:
+                    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "NO MATCH: Audio stream contains only silence.");
+                    break;
+                case NoMatchReason::InitialBabbleTimeout:
+                    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "NO MATCH: Audio stream contains only noise.");
+                    break;
+                case NoMatchReason::KeywordNotRecognized:
+                    // should not happen since we do not use keyword verification
+                    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "NO MATCH: Keyword not recognized.");
+                    break;
+                default:
+                    // also should not happen but log just in case
+                    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "NO MATCH: Unknown recognition failure.");
+            }
             apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "NO MATCH: Speech could not be recognized.");
             ms_recog_recognition_complete(recog_channel, RECOGNIZER_COMPLETION_CAUSE_NO_MATCH);
         }
     });
+
+    resource->recognizer->ActivityReceived.Connect(
+        [recog_channel](const ActivityReceivedEventArgs& e)
+        {
+            apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "Received bot response.");
+
+            // Note GetActivity below returns a JSON which is an array of
+            // bot framework activities activities
+            recog_channel->resource->result = e.GetActivity();
+            ms_recog_recognition_complete(recog_channel, RECOGNIZER_COMPLETION_CAUSE_SUCCESS);
+        });
 
     resource->recognizer->Canceled.Connect(
     [recog_channel](const SpeechRecognitionCanceledEventArgs& e) {
@@ -652,7 +644,7 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
         ms_recog_recognition_complete(recog_channel, RECOGNIZER_COMPLETION_CAUSE_ERROR);
     });
 
-    resource->recognizer->StartContinuousRecognitionAsync();
+    resource->recognizer->ListenOnceAsync();
     return TRUE;
 }
 
@@ -676,17 +668,19 @@ static apt_bool_t ms_recog_result_load(ms_recog_channel_t* recog_channel, mrcp_m
 
     const auto body = &message->body;
 
-    const auto result = recog_channel->resource->result.c_str();
+    // since our result is a JSON array of BF activities we ignore it,
+    // the way to handle that is TBD so we provide dummy result here
+    // const auto result = recog_channel->resource->result.c_str();
     const auto grammarId = recog_channel->resource->grammarId.c_str();
     body->buf = apr_psprintf(message->pool,
                              "<?xml version=\"1.0\"?>\n"
                              "<result>\n"
                              "  <interpretation grammar=\"session:%s\" confidence=\"%.2f\">\n"
-                             "    <instance>%s</instance>\n"
-                             "    <input mode=\"speech\">%s</input>\n"
+                             "    <instance>Dummy result</instance>\n"
+                             "    <input mode=\"speech\">Dummy result</input>\n"
                              "  </interpretation>\n"
                              "</result>\n",
-                             grammarId, 0.99f, result, result);
+                             grammarId, 0.99f);
 
     if(body->buf)
     {
