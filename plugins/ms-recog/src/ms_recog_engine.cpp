@@ -122,18 +122,20 @@ struct RecogResource
         static auto region =
         ConfigManager::GetStrValue(Common::SPEECH_SECTION, Common::SPEECH_SDK_REGION);
 
-        config = BotFrameworkConfig::FromSubscription(subscriptionKey, region);
-        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Microsoft Dialog Recognition engine configured to use azure-cloud speech subscription");
+        config = BotFrameworkConfig::FromSubscription(subscriptionKey, "");
 
         // we need endpoint override
-        std::stringstream endpoint("wss://");
-        endpoint << region;
+        std::stringstream endpoint;
+        endpoint << "wss://" << region;
         endpoint << ".convai.speech.microsoft.com/mrcp/api/v1";
         config->SetProperty("SPEECH-Endpoint", endpoint.str());
+        config->SetProperty(PropertyId::Speech_LogFilename, "/tmp/speechsdk.log");
 
         // client ID. Unique identifier for the specific client
         // Very helpful to provide when reporting issues
         config->SetServiceProperty("clientId", "1182a496-d94f-4132-96e3-71933054705f", ServicePropertyChannel::UriQueryParameter);
+
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Microsoft dialog recognition engine connection to %s", endpoint.str().c_str());
 
         // Request detailed output format.
         // config->SetOutputFormat(OutputFormat::Detailed);
