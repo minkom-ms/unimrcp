@@ -579,11 +579,11 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
     const auto audioInput = Audio::AudioConfig::FromStreamInput(resource->pushStream);
     // Unique ID for the connection. Must be created unique on every connection
     // very useful when reporting issues
-    // resource->config->SetServiceProperty("connectionId", "00000000-0000-0000-0000-000000000000", ServicePropertyChannel::UriQueryParameter);
+    resource->config->SetServiceProperty("connectionId", "a88212cb-7df6-4ee1-9011-45d944771156", ServicePropertyChannel::UriQueryParameter);
     resource->recognizer = DialogServiceConnector::FromConfig(resource->config, audioInput);
 
     resource->recognizer->Recognizing.Connect([](const SpeechRecognitionEventArgs& e) noexcept {
-        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Recognizing: %s", e.Result->Text.c_str());
+        apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "--------------- Recognizing: %s", e.Result->Text.c_str());
     });
 
     // Note the recog_channel must be captured as a variable
@@ -594,7 +594,7 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
             // just log the reco result since we're interested in the bot response result
             // which will come with the ActivityReceived event handler below
             std::string displayText = e.Result->Text;
-            apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "Recognized text: %s", displayText.c_str());
+            apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "--------------- Recognized text: %s", displayText.c_str());
         }
         else if(e.Result->Reason == ResultReason::NoMatch)
         {
@@ -618,7 +618,6 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
                     // also should not happen but log just in case
                     apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "NO MATCH: Unknown recognition failure.");
             }
-            apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "NO MATCH: Speech could not be recognized.");
             ms_recog_recognition_complete(recog_channel, RECOGNIZER_COMPLETION_CAUSE_NO_MATCH);
         }
     });
@@ -626,7 +625,7 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
     resource->recognizer->ActivityReceived.Connect(
         [recog_channel](const ActivityReceivedEventArgs& e)
         {
-            apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "Received bot response.");
+            apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "--------------- Received bot response.");
 
             // Note GetActivity below returns a JSON which is an array of
             // bot framework activities activities
@@ -636,7 +635,7 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
 
     resource->recognizer->Canceled.Connect(
     [recog_channel](const SpeechRecognitionCanceledEventArgs& e) {
-        apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "Speech recognition cancelled.");
+        apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "--------------- Speech recognition cancelled.");
         if(e.Reason == CancellationReason::Error)
         {
             apt_log(RECOG_LOG_MARK, APT_PRIO_ERROR, "Speech recognition error, Error Code: [%d], Error Details: [%s].",
@@ -758,6 +757,8 @@ static apt_bool_t ms_recog_stream_write(mpf_audio_stream_t* stream, const mpf_fr
         recog_channel->recog_request = nullptr;
         return TRUE;
     }
+
+    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "-------------- Sending audio buffer of size: %i", frame->codec_frame.size);
 
     if(frame->codec_frame.size)
     {
