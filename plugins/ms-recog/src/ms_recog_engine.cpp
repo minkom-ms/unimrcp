@@ -23,6 +23,7 @@
 #include "mrcp_recog_engine.h"
 
 #include "config_manager.h"
+#include <apr_uuid.h>
 #include <cassert>
 #include <common.h>
 #include <condition_variable>
@@ -111,6 +112,7 @@ struct RecogResource
     std::shared_ptr<DialogServiceConfig> config;
     std::shared_ptr<Audio::PushAudioInputStream> pushStream;
     std::shared_ptr<DialogServiceConnector> recognizer;
+    std::future<std::shared_ptr<SpeechRecognitionResult>> pending_request;
 
     RecogResource()
     {
@@ -579,7 +581,13 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
     const auto audioInput = Audio::AudioConfig::FromStreamInput(resource->pushStream);
     // Unique ID for the connection. Must be created unique on every connection
     // very useful when reporting issues
-    resource->config->SetServiceProperty("connectionId", "a88212cb-7df6-4ee1-9011-45d944771156", ServicePropertyChannel::UriQueryParameter);
+    apr_uuid_t connection_uuid;
+    apr_uuid_get(&connection_uuid);
+    char connection_uuid_str[APR_UUID_FORMATTED_LENGTH + 1];
+    apr_uuid_format(connection_uuid_str, &connection_uuid);
+    resource->config->SetServiceProperty("connectionId", connection_uuid_str, ServicePropertyChannel::UriQueryParameter);
+    apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "--------------- Client connection ID: %s", connection_uuid_str);
+
     resource->recognizer = DialogServiceConnector::FromConfig(resource->config, audioInput);
 
     resource->recognizer->Recognizing.Connect([](const SpeechRecognitionEventArgs& e) noexcept {
@@ -625,11 +633,12 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
     resource->recognizer->ActivityReceived.Connect(
         [recog_channel](const ActivityReceivedEventArgs& e)
         {
-            apt_log(RECOG_LOG_MARK, APT_PRIO_WARNING, "--------------- Received bot response.");
+            apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "--------------- Received bot response.");
 
             // Note GetActivity below returns a JSON which is an array of
             // bot framework activities activities
             recog_channel->resource->result = e.GetActivity();
+            apt_log(RECOG_LOG_MARK, APT_PRIO_INFO, "--------------- Response activity: %s", recog_channel->resource->result.c_str());
             ms_recog_recognition_complete(recog_channel, RECOGNIZER_COMPLETION_CAUSE_SUCCESS);
         });
 
@@ -645,7 +654,7 @@ static apt_bool_t ms_recog_stream_open(mpf_audio_stream_t* stream, mpf_codec_t* 
         ms_recog_recognition_complete(recog_channel, RECOGNIZER_COMPLETION_CAUSE_ERROR);
     });
 
-    resource->recognizer->ListenOnceAsync();
+    resource->pending_request = resource->recognizer->ListenOnceAsync();
     return TRUE;
 }
 
